@@ -112,6 +112,12 @@ func parseDNSReply(buffer [] byte) {
 		fmt.Println("Answer authenticated")
 	}
 	
+	if flags & 0x0400 != 0 {
+		fmt.Println("Authoritative answer")
+	} else {
+		fmt.Println("Non-authoritative answer")
+	}
+	
 	// rcode
 	fmt.Print("rcode: ")
 	switch flags & 0x000F {
@@ -138,14 +144,11 @@ func parseDNSReply(buffer [] byte) {
 	
 	ancount := binary.BigEndian.Uint16(buffer[6:])
 	var offset uint16 = 12
-	for i := 0; i < int(ancount); i++ {
-		n := parseDNSAnswer(buffer[offset:])
-		fmt.Println("\nn = ", n)
-		offset += n
-	}
+	parseDNSAnswer(buffer[offset:], ancount)
 }
 
-func parseDNSAnswer(buffer [] byte) uint16 {
+func parseDNSAnswer(buffer [] byte, ancount uint16) {
+	// TO DO: make an internal function (closure) to convert length-prefixed name into dot-separated name
 	var name string
 	var offset uint16 = 0
 	var i byte = 0
@@ -160,35 +163,54 @@ func parseDNSAnswer(buffer [] byte) uint16 {
 	
 	offset = uint16(i) + 1
 	
-	fmt.Println("Queried name: ", name)
-	
-	rtype := binary.BigEndian.Uint16(buffer[offset:])
+	qtype := binary.BigEndian.Uint16(buffer[offset:])
 	offset += 2
-	class := binary.BigEndian.Uint16(buffer[offset:])
-	offset += 2
-	ttl := binary.BigEndian.Uint32(buffer[offset:])
-	offset += 4
-	rdlength := binary.BigEndian.Uint16(buffer[offset:])
+	qclass := binary.BigEndian.Uint16(buffer[offset:])
 	offset += 2
 	
-	fmt.Printf("class: %04x, ttl: %d, data length: %d, type: ", class, ttl, rdlength)
-	if rtype == 0x0001 {
-		fmt.Println("A-record")		
-		var hostIP [4]byte
-		for i = 0; i < 4; i++ {
-			hostIP[i] = buffer[offset + uint16(i)]
-		}
-		fmt.Printf("Host IP: %d.%d.%d.%d\n", uint16(hostIP[0]), uint16(hostIP[1]), uint16(hostIP[2]), uint16(hostIP[3]))
+	fmt.Printf("Queried name: %s, qtype: %04x, qclass: %04x\n", name, qtype, qclass)
+	
+	for ancount != 0 {
+		offset += 2	// skip 0xC00C, don't understand what is it.
+		
+		atype := binary.BigEndian.Uint16(buffer[offset:])
+		offset += 2
+		aclass := binary.BigEndian.Uint16(buffer[offset:])
+		offset += 2	
+		
+		ttl := binary.BigEndian.Uint32(buffer[offset:])
 		offset += 4
-	} else if rtype == 0x0005 {
-		fmt.Println("CNAME")
-	} else if rtype == 0x000f {
-		fmt.Println("mailserver")
+		rdlength := binary.BigEndian.Uint16(buffer[offset:])
+		offset += 2
+		
+		fmt.Printf("atype: %04x, aclass: %04x, ttl: %d, data length: %d\n", atype, aclass, ttl, rdlength)
+		if atype == 0x0001 {
+			var hostIP [4]byte
+			for i = 0; i < 4; i++ {
+				hostIP[i] = buffer[offset + uint16(i)]
+			}
+			fmt.Printf("A-record: %d.%d.%d.%d\n", uint16(hostIP[0]), uint16(hostIP[1]), uint16(hostIP[2]), uint16(hostIP[3]))
+		} else if atype == 0x0005 {
+			// cname := string(buffer[offset:offset + rdlength])
+			// fmt.Println("CNAME: ", cname)
+			name = ""
+			i = byte(offset)
+			n = buffer[offset]
+			for n != 0 {
+				i += 1
+				name += string(buffer[i:i+n])
+				name += "."
+				i += n
+				n = buffer[i]
+			}			
+			fmt.Println("CNAME: ", name)
+		} else if atype == 0x000f {
+			fmt.Println("mailserver")
+		}
+		
+		offset += rdlength
+		ancount -= 1
 	}
-	
-	// offset += rdlength
-	
-	return offset
 }
 
 func main() {
@@ -207,6 +229,11 @@ func main() {
 	for i := 0; i < len(queryBuffer); i++ {
 		fmt.Printf("%02x ", queryBuffer[i])
 	}
+	
+	/* Public DNS services:
+		OpenDNS 208.67.222.222, 208.67.220.220
+		Google 8.8.8.8, 8.8.4.4
+	*/
 
 	s, err := net.ResolveUDPAddr("udp4", "8.8.8.8:53")
 	if err != nil {
